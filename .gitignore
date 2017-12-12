@@ -7,3 +7,5 @@
 /Library
 /ProjectSettings
 /Temp
+/Assets/Test.cs
+*.csproj
