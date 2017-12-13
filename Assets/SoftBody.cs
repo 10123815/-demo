@@ -19,7 +19,7 @@ public class SoftBody : MonoBehaviour
 	private List<RigidContactInfo> m_rigidContactInfos;
 
 	// 这个相当于overlapping pairs
-	protected List<Collider> m_colliders;
+	public List<Collider> m_colliders = new List<Collider>();
 
 	protected Mesh m_mesh;
 	private Terrain m_terrain;
@@ -65,10 +65,8 @@ public class SoftBody : MonoBehaviour
 	void Awake()
 	{
 		CreateSoftBody();
-		m_colliders = new List<Collider>();
 
 		m_terrain = GameObject.FindGameObjectWithTag("Terrain").GetComponent<Terrain>();
-		m_colliders.Add(m_terrain.GetComponent<TerrainCollider>());
 
 		m_rigidContactInfos = new List<RigidContactInfo>();
 	}
@@ -130,7 +128,7 @@ public class SoftBody : MonoBehaviour
 		if (isTorus) {
 			m_mesh.vertices = new Vector3[vertices.Length];
 			m_mesh.uv = new Vector2[vertices.Length];
-			m_mesh.triangles = tris; 
+			m_mesh.triangles = tris;
 		}
 
 		for (int i = 0; i < vertices.Length; i++) {
@@ -144,7 +142,7 @@ public class SoftBody : MonoBehaviour
 
 			if (isTorus) {
 				m_mesh.uv[i] = new Vector2(0, 0);
-				m_mesh.vertices[i] = vertices[i]; 
+				m_mesh.vertices[i] = vertices[i];
 			}
 		}
 
@@ -204,69 +202,93 @@ public class SoftBody : MonoBehaviour
 
 	protected void NarrowPhase()
 	{
+		NarrowPhaseWithBox();
+		NarrowPhaseWithTerrain();
+	}
+
+	private void NarrowPhaseWithBox()
+	{
 		for (int i = 0; i < m_colliders.Count; i++) {
-			Collider collider = m_colliders[i];
+			Collider cld = m_colliders[i];
+			Bounds bounds = cld.bounds;
+			bounds.center = cld.transform.position;
 			for (int j = 0; j < m_nodes.Count; j++) {
-				// 检测各个顶点是否与collider碰撞。不精确，有时三个点不在collider内，但是三角形却与collider相交
 				Node node = m_nodes[j];
-				if (collider.tag != "Terrain") {
-					// 最近点
-					Vector3 point = collider.ClosestPoint(node.curpos);
-				}
-				else {
-					RaycastHit hit;
-					int layerMask = 1 << LayerMask.NameToLayer("Terrain");
+				if (bounds.Contains(node.curpos)) {
+					Vector3 normal;
+					float dst = -MinDistanceWhenPntInBox(node.curpos, bounds, out normal);
+
 					RigidContactInfo rci = new RigidContactInfo();
-
-					// 检测一下质点是否在物体内，因为上一帧的impulse不一定能把质点移出到物体外，这时射线是不能喝物体相交的
-					float y = m_terrain.SampleHeight(node.curpos);
-					if (node.curpos.y < y) {
-						if (node.prevpos.y < y) {
-							// 上一帧的impulse没把质点移出物体外
-
-							// 这样算距离太暴力了，应该算当前位置和网格的最近距离，但是TerrainCollider不支持Physics.ClosetPoint
-							// float dst = node.curpos.y - y;
-							// 可以通过梯度下降法求一个近似的最近点，限制最多迭代次数
-							Vector3 closetPoint;
-							float dst = -GradientDescent(m_terrain, node.curpos, out closetPoint);
-							if (Physics.Raycast(node.curpos, closetPoint - node.curpos, out hit, layerMask)) {
-								rci.normal = hit.normal;
-							}
-							rci.node = node;
-							rci.collider = collider;
-							rci.param0 = node.w * Time.fixedDeltaTime;
-							rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
-							rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
-							m_rigidContactInfos.Add(rci);
-						}
-						else if (Physics.Linecast(node.prevpos, node.curpos, out hit, layerMask)) {
-							// 外→内
-							float dst = -(node.curpos - hit.point).magnitude;
-							rci.normal = hit.normal.normalized;
-							rci.node = node;
-							rci.collider = collider;
-							rci.param0 = node.w * Time.fixedDeltaTime;
-							rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
-							rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
-							m_rigidContactInfos.Add(rci);
-						}
-					}
-					else if (node.prevpos.y >= y && Physics.Linecast(node.prevpos, node.curpos, out hit, layerMask)) {
-						// 都在物体外，但射线穿过物体，小物体、尖锐的地方可能会出现这种情况
-						float dst = -(node.curpos - hit.point).magnitude;
-						rci.normal = hit.normal.normalized;
-						rci.node = node;
-						rci.collider = collider;
-						rci.param0 = node.w * Time.fixedDeltaTime;
-						rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
-						rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
-						m_rigidContactInfos.Add(rci);
-					}
-
-					// 内→外不算，因为线性约束已经把质点拉出物体了
+					rci.normal = normal;
+					rci.node = node;
+					rci.collider = cld;
+					rci.param0 = node.w * Time.fixedDeltaTime;
+					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
+					m_rigidContactInfos.Add(rci);
 				}
 			}
 		}
+	}
+
+	private void NarrowPhaseWithTerrain()
+	{
+		for (int i = 0; i < m_nodes.Count; i++) {
+			// 检测各个顶点是否与collider碰撞。不精确，有时三个点不在collider内，但是三角形却与collider相交
+			Node node = m_nodes[i];
+			RaycastHit hit;
+			int layerMask = 1 << LayerMask.NameToLayer("Terrain");
+			RigidContactInfo rci = new RigidContactInfo();
+
+			// 检测一下质点是否在物体内，因为上一帧的impulse不一定能把质点移出到物体外，这时射线是不能喝物体相交的
+			float y = m_terrain.SampleHeight(node.curpos);
+			if (node.curpos.y < y) {
+				if (node.prevpos.y < y) {
+					// 上一帧的impulse没把质点移出物体外
+
+					// 这样算距离太暴力了，应该算当前位置和网格的最近距离，但是TerrainCollider不支持Physics.ClosetPoint
+					// float dst = node.curpos.y - y;
+
+					// 可以通过梯度下降法求一个近似的最近点。限制最多迭代次数
+					Vector3 closetPoint;
+					float dst = -GradientDescent(m_terrain, node.curpos, out closetPoint);
+					if (Physics.Raycast(node.curpos, closetPoint - node.curpos, out hit, layerMask)) {
+						rci.normal = hit.normal;
+					}
+					rci.node = node;
+					rci.collider = null;
+					rci.param0 = node.w * Time.fixedDeltaTime;
+					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
+					m_rigidContactInfos.Add(rci);
+				}
+				else if (Physics.Linecast(node.prevpos, node.curpos, out hit, layerMask)) {
+					// 外→内
+					float dst = -(node.curpos - hit.point).magnitude;
+					rci.normal = hit.normal.normalized;
+					rci.node = node;
+					rci.collider = null;
+					rci.param0 = node.w * Time.fixedDeltaTime;
+					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
+					m_rigidContactInfos.Add(rci);
+				}
+			}
+			else if (node.prevpos.y >= y && Physics.Linecast(node.prevpos, node.curpos, out hit, layerMask)) {
+				// 都在物体外，但射线穿过物体，小物体、尖锐的地方可能会出现这种情况
+				float dst = -(node.curpos - hit.point).magnitude;
+				rci.normal = hit.normal.normalized;
+				rci.node = node;
+				rci.collider = null;
+				rci.param0 = node.w * Time.fixedDeltaTime;
+				rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+				rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
+				m_rigidContactInfos.Add(rci);
+			}
+
+			// 内→外不算，因为线性约束已经把质点拉出物体了
+		}
+
 	}
 
 	protected void SolveContraints()
@@ -279,7 +301,7 @@ public class SoftBody : MonoBehaviour
 			Collider collider = rci.collider;
 
 			Vector3 va = Vector3.zero;
-			if (collider.tag != "Terrain") {
+			if (collider != null) {
 				// TODO: 刚体的速度
 			}
 			Vector3 vb = node.curpos - node.prevpos;
@@ -289,7 +311,7 @@ public class SoftBody : MonoBehaviour
 			Vector3 fv = vr - rci.normal * dn;
 			Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
 			node.curpos -= impulse * rci.param0;
-			if (collider.tag != "Terrain") {
+			if (collider != null) {
 				// 刚体收到的冲量矩
 			}
 		}
@@ -394,5 +416,88 @@ public class SoftBody : MonoBehaviour
 			}
 		}
 		return Mathf.Sqrt(minSqrdst);
+	}
+
+	/// <summary>
+	/// 离平面最小距离
+	/// </summary>
+	static private float DistanceFromPlane(Vector3 origin, Vector3 p0, Vector3 p1, Vector3 p2, out Vector3 normal)
+	{
+		Vector3 line1 = p1 - p0;
+		Vector3 line2 = p2 - p0;
+		normal = Vector3.Cross(line1, line2).normalized;
+		float dst = Vector3.Dot(normal, origin - p0);
+		if (dst < 0) {
+			dst = -dst;
+		}
+		return dst;
+	}
+
+	/// <summary>
+	/// 求点在box内部时，到box的最近距离，以及最近面的法线。在点外面时结果是错的
+	/// </summary>
+	static public float MinDistanceWhenPntInBox(Vector3 origin, Bounds box, out Vector3 normal)
+	{
+		Vector3[] triangle = new Vector3[8];
+		for (int i = 0; i < 8; i++) {
+			triangle[i] = box.center;
+		}
+		triangle[0][0] = triangle[1][0] = triangle[2][0] = triangle[3][0] += box.extents[0];
+		triangle[4][0] = triangle[5][0] = triangle[6][0] = triangle[7][0] -= box.extents[0];
+		triangle[3][1] = triangle[2][1] = triangle[6][1] = triangle[7][1] += box.extents[1];
+		triangle[0][1] = triangle[1][1] = triangle[5][1] = triangle[4][1] -= box.extents[1];
+		triangle[1][2] = triangle[2][2] = triangle[6][2] = triangle[5][2] += box.extents[2];
+		triangle[0][2] = triangle[3][2] = triangle[7][2] = triangle[4][2] -= box.extents[2];
+
+		Vector3 n;
+		float dst = DistanceFromPlane(origin, triangle[0], triangle[1], triangle[2], out n);
+		float mindst = dst;
+		normal = n;
+
+		dst = DistanceFromPlane(origin, triangle[2], triangle[3], triangle[6], out n);
+		if (dst < mindst) {
+			mindst = dst;
+			normal = n;
+		}
+
+		dst = DistanceFromPlane(origin, triangle[1], triangle[2], triangle[6], out n);
+		if (dst < mindst) {
+			mindst = dst;
+			normal = n;
+		}
+
+		if (Vector3.Dot(normal, triangle[2] - box.center) < 0) {
+			// 法线指向box外
+			normal = -normal;
+		}
+
+		bool changed = false;
+		dst = DistanceFromPlane(origin, triangle[4], triangle[5], triangle[6], out n);
+		if (dst < mindst) {
+			mindst = dst;
+			normal = n;
+			changed = true;
+		}
+
+		dst = DistanceFromPlane(origin, triangle[0], triangle[4], triangle[5], out n);
+		if (dst < mindst) {
+			mindst = dst;
+			normal = n;
+			changed = true;
+		}
+
+		dst = DistanceFromPlane(origin, triangle[0], triangle[3], triangle[4], out n);
+		if (dst < mindst) {
+			mindst = dst;
+			normal = n;
+			changed = true;
+		}
+
+		// 指向box外
+		if (changed && Vector3.Dot(normal, triangle[4] - box.center) < 0) {
+			normal = -normal;
+		}
+
+		return mindst;
 	}
 }
