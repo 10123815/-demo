@@ -202,29 +202,30 @@ public class SoftBody : MonoBehaviour
 
 	protected void NarrowPhase()
 	{
-		NarrowPhaseWithBox();
+		NarrowPhaseWithOBB();
 		NarrowPhaseWithTerrain();
 	}
 
-	private void NarrowPhaseWithBox()
+	private void NarrowPhaseWithOBB()
 	{
 		for (int i = 0; i < m_colliders.Count; i++) {
 			Collider cld = m_colliders[i];
-			Bounds bounds = cld.bounds;
-			bounds.center = cld.transform.position;
+			Transform tr = cld.transform;
+			OBB obb = new OBB(tr);
 			for (int j = 0; j < m_nodes.Count; j++) {
 				Node node = m_nodes[j];
-				if (bounds.Contains(node.curpos)) {
-					Vector3 normal;
-					float dst = -MinDistanceWhenPntInBox(node.curpos, bounds, out normal);
-
+				Vector3 normal;
+				float dst = obb.MinDistanceWhenPntInOBB(node.curpos, out normal);
+				if (dst <= 0) {
 					RigidContactInfo rci = new RigidContactInfo();
 					rci.normal = normal;
 					rci.node = node;
 					rci.collider = cld;
 					rci.param0 = node.w * Time.fixedDeltaTime;
 					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
-					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
+					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, 
+						obb.InertiaTensor(tr.rotation), 
+						node.curpos - tr.position);
 					m_rigidContactInfos.Add(rci);
 				}
 			}
@@ -299,10 +300,15 @@ public class SoftBody : MonoBehaviour
 			RigidContactInfo rci = m_rigidContactInfos[j];
 			Node node = rci.node;
 			Collider collider = rci.collider;
+			Rigidbody rigid = null;
 
 			Vector3 va = Vector3.zero;
 			if (collider != null) {
-				// TODO: 刚体的速度
+				// 刚体的速度
+				rigid = collider.attachedRigidbody;
+				if (rigid != null) {
+					//va = rigid.velocity; 
+				}
 			}
 			Vector3 vb = node.curpos - node.prevpos;
 			Vector3 vr = vb - va;
@@ -311,8 +317,9 @@ public class SoftBody : MonoBehaviour
 			Vector3 fv = vr - rci.normal * dn;
 			Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
 			node.curpos -= impulse * rci.param0;
-			if (collider != null) {
-				// 刚体收到的冲量矩
+			if (rigid != null) {
+				// 刚体收到的冲量
+				rigid.AddForce(impulse, ForceMode.Impulse);
 			}
 		}
 		// solve position constraints
@@ -418,86 +425,4 @@ public class SoftBody : MonoBehaviour
 		return Mathf.Sqrt(minSqrdst);
 	}
 
-	/// <summary>
-	/// 离平面最小距离
-	/// </summary>
-	static private float DistanceFromPlane(Vector3 origin, Vector3 p0, Vector3 p1, Vector3 p2, out Vector3 normal)
-	{
-		Vector3 line1 = p1 - p0;
-		Vector3 line2 = p2 - p0;
-		normal = Vector3.Cross(line1, line2).normalized;
-		float dst = Vector3.Dot(normal, origin - p0);
-		if (dst < 0) {
-			dst = -dst;
-		}
-		return dst;
-	}
-
-	/// <summary>
-	/// 求点在box内部时，到box的最近距离，以及最近面的法线。在点外面时结果是错的
-	/// </summary>
-	static public float MinDistanceWhenPntInBox(Vector3 origin, Bounds box, out Vector3 normal)
-	{
-		Vector3[] triangle = new Vector3[8];
-		for (int i = 0; i < 8; i++) {
-			triangle[i] = box.center;
-		}
-		triangle[0][0] = triangle[1][0] = triangle[2][0] = triangle[3][0] += box.extents[0];
-		triangle[4][0] = triangle[5][0] = triangle[6][0] = triangle[7][0] -= box.extents[0];
-		triangle[3][1] = triangle[2][1] = triangle[6][1] = triangle[7][1] += box.extents[1];
-		triangle[0][1] = triangle[1][1] = triangle[5][1] = triangle[4][1] -= box.extents[1];
-		triangle[1][2] = triangle[2][2] = triangle[6][2] = triangle[5][2] += box.extents[2];
-		triangle[0][2] = triangle[3][2] = triangle[7][2] = triangle[4][2] -= box.extents[2];
-
-		Vector3 n;
-		float dst = DistanceFromPlane(origin, triangle[0], triangle[1], triangle[2], out n);
-		float mindst = dst;
-		normal = n;
-
-		dst = DistanceFromPlane(origin, triangle[2], triangle[3], triangle[6], out n);
-		if (dst < mindst) {
-			mindst = dst;
-			normal = n;
-		}
-
-		dst = DistanceFromPlane(origin, triangle[1], triangle[2], triangle[6], out n);
-		if (dst < mindst) {
-			mindst = dst;
-			normal = n;
-		}
-
-		if (Vector3.Dot(normal, triangle[2] - box.center) < 0) {
-			// 法线指向box外
-			normal = -normal;
-		}
-
-		bool changed = false;
-		dst = DistanceFromPlane(origin, triangle[4], triangle[5], triangle[6], out n);
-		if (dst < mindst) {
-			mindst = dst;
-			normal = n;
-			changed = true;
-		}
-
-		dst = DistanceFromPlane(origin, triangle[0], triangle[4], triangle[5], out n);
-		if (dst < mindst) {
-			mindst = dst;
-			normal = n;
-			changed = true;
-		}
-
-		dst = DistanceFromPlane(origin, triangle[0], triangle[3], triangle[4], out n);
-		if (dst < mindst) {
-			mindst = dst;
-			normal = n;
-			changed = true;
-		}
-
-		// 指向box外
-		if (changed && Vector3.Dot(normal, triangle[4] - box.center) < 0) {
-			normal = -normal;
-		}
-
-		return mindst;
-	}
 }
