@@ -8,7 +8,9 @@ public class SoftBody : MonoBehaviour
 
 	public float W = 0.1f;
 	public Vector3 G = new Vector3(0, -9.8f, 0);
-	public float STIFFNESS = 1;
+	public float Stiffness = 1;
+	public float Friction = 0.1f;
+	public float Hardness = 0.1f;
 	public int INTERATIONS = 20;
 
 	protected List<Node> m_nodes;
@@ -181,7 +183,7 @@ public class SoftBody : MonoBehaviour
 		for (int i = 0; i < m_links.Count; i++) {
 			Link link = m_links[i];
 			float w = link.n1.w + link.n2.w;
-			link.param0 = w / STIFFNESS;
+			link.param0 = w / Stiffness;
 		}
 
 		for (int i = 0; i < m_nodes.Count; i++) {
@@ -210,6 +212,10 @@ public class SoftBody : MonoBehaviour
 	{
 		for (int i = 0; i < m_colliders.Count; i++) {
 			Collider cld = m_colliders[i];
+			Rigidbody rigid = cld.attachedRigidbody;
+			if (rigid == null) {
+				continue;
+			}
 			Transform tr = cld.transform;
 			OBB obb = new OBB(tr);
 			for (int j = 0; j < m_nodes.Count; j++) {
@@ -217,7 +223,17 @@ public class SoftBody : MonoBehaviour
 				Vector3 normal;
 				float dst = obb.MinDistanceWhenPntInOBB(node.curpos, out normal);
 				if (dst <= 0) {
+					Vector3 ra = node.curpos - tr.position;
+					Vector3 va = rigid.velocity + Vector3.Cross(rigid.angularVelocity, node.curpos);
+					va *= Time.fixedDeltaTime;
+					Vector3 vb = node.curpos - node.prevpos;
+					Vector3 vr = vb - va;
+					float dn = Vector3.Dot(vr, normal);
+					Vector3 fv = vr - normal * dn;
+
 					RigidContactInfo rci = new RigidContactInfo();
+					rci.hardness = Hardness;
+					rci.friction = fv.sqrMagnitude < (dn * Friction * dn * Friction) ? 0 : 1 - Friction;
 					rci.normal = normal;
 					rci.node = node;
 					rci.collider = cld;
@@ -294,36 +310,35 @@ public class SoftBody : MonoBehaviour
 
 	protected void SolveContraints()
 	{
-
-		// contacts solver
-		for (int j = 0; j < m_rigidContactInfos.Count; j++) {
-			RigidContactInfo rci = m_rigidContactInfos[j];
-			Node node = rci.node;
-			Collider collider = rci.collider;
-			Rigidbody rigid = null;
-
-			Vector3 va = Vector3.zero;
-			if (collider != null) {
-				// 刚体的速度
-				rigid = collider.attachedRigidbody;
-				if (rigid != null) {
-					//va = rigid.velocity; 
-				}
-			}
-			Vector3 vb = node.curpos - node.prevpos;
-			Vector3 vr = vb - va;
-			float dn = Vector3.Dot(vr, rci.normal);
-			float dp = Mathf.Min(Vector3.Dot(node.curpos, rci.normal) + rci.offset, 0.25f);
-			Vector3 fv = vr - rci.normal * dn;
-			Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
-			node.curpos -= impulse * rci.param0;
-			if (rigid != null) {
-				// 刚体收到的冲量
-				rigid.AddForce(impulse, ForceMode.Impulse);
-			}
-		}
 		// solve position constraints
 		for (int i = 0; i < INTERATIONS; i++) {
+			// contacts solver
+			for (int j = 0; j < m_rigidContactInfos.Count; j++) {
+				RigidContactInfo rci = m_rigidContactInfos[j];
+				Node node = rci.node;
+				Collider collider = rci.collider;
+				Rigidbody rigid = null;
+
+				Vector3 va = Vector3.zero;
+				if (collider != null) {
+					// 刚体的速度
+					rigid = collider.attachedRigidbody;
+					if (rigid != null) {
+						va = rigid.velocity * Time.fixedDeltaTime;
+					}
+				}
+				Vector3 vb = node.curpos - node.prevpos;
+				Vector3 vr = vb - va;
+				float dn = Vector3.Dot(vr, rci.normal);
+				float dp = Mathf.Min(Vector3.Dot(node.curpos, rci.normal) + rci.offset, 0.01f);
+				Vector3 fv = vr - rci.normal * dn;
+				Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
+				node.curpos -= impulse * rci.param0;
+				if (rigid != null) {
+					// 刚体收到的冲量
+					rigid.AddForce(impulse, ForceMode.Impulse);
+				}
+			}
 			// linear soler
 			for (int j = 0; j < m_links.Count; j++) {
 				Link link = m_links[j];
