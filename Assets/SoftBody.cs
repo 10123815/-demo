@@ -18,7 +18,7 @@ public class SoftBody : MonoBehaviour
 	protected List<Face> m_faces;
 
 	// 和刚体的碰撞信息
-	private List<RigidContactInfo> m_rigidContactInfos;
+	private List<RigidContactInfo> m_rigidContactInfos = new List<RigidContactInfo>();
 
 	// 这个相当于overlapping pairs
 	public List<Collider> m_colliders = new List<Collider>();
@@ -37,7 +37,8 @@ public class SoftBody : MonoBehaviour
 		public Collider collider;
 		public Node node;
 
-		public float param0;    // dt / mass
+		public float param0;	// dt / mass
+		public Vector3 param1;	// relative anchor
 	}
 
 	protected class Node
@@ -70,7 +71,10 @@ public class SoftBody : MonoBehaviour
 
 		m_terrain = GameObject.FindGameObjectWithTag("Terrain").GetComponent<Terrain>();
 
-		m_rigidContactInfos = new List<RigidContactInfo>();
+		GameObject[] boxs = GameObject.FindGameObjectsWithTag("box");
+		for (int i = 0; i < boxs.Length; i++) {
+			m_colliders.Add(boxs[i].GetComponent<Collider>());
+		}
 	}
 
 	virtual protected void CreateSoftBody()
@@ -94,10 +98,10 @@ public class SoftBody : MonoBehaviour
 	// Update is called once per frame
 	void Update()
 	{
-		for (int i = 0; i < m_nodes.Count; i++) {
-			Node node = m_nodes[i];
-			Debug.DrawLine(node.prevpos, node.curpos, Color.blue);
-		}
+		//for (int i = 0; i < m_nodes.Count; i++) {
+		//	Node node = m_nodes[i];
+		//	Debug.DrawLine(node.prevpos, node.curpos, Color.blue);
+		//}
 	}
 
 	void FixedUpdate()
@@ -220,11 +224,13 @@ public class SoftBody : MonoBehaviour
 			OBB obb = new OBB(tr);
 			for (int j = 0; j < m_nodes.Count; j++) {
 				Node node = m_nodes[j];
-				Vector3 normal;
-				float dst = obb.MinDistanceWhenPntInOBB(node.curpos, out normal);
+				Vector3 point;
+				// float dst = obb.MinDistanceWhenPntInOBB(node.curpos, out normal);
+				float dst = obb.ClostestPntOnOBB(node.curpos, out point);
 				if (dst <= 0) {
+					Vector3 normal = (point - node.curpos).normalized;
 					Vector3 ra = node.curpos - tr.position;
-					Vector3 va = rigid.velocity + Vector3.Cross(rigid.angularVelocity, node.curpos);
+					Vector3 va = rigid.velocity + Vector3.Cross(rigid.angularVelocity, ra);
 					va *= Time.fixedDeltaTime;
 					Vector3 vb = node.curpos - node.prevpos;
 					Vector3 vr = vb - va;
@@ -238,10 +244,9 @@ public class SoftBody : MonoBehaviour
 					rci.node = node;
 					rci.collider = cld;
 					rci.param0 = node.w * Time.fixedDeltaTime;
+					rci.param1 = ra;
 					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
-					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, 
-						obb.InertiaTensor(tr.rotation), 
-						node.curpos - tr.position);
+					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, obb.InertiaTensor(tr.rotation), ra);
 					m_rigidContactInfos.Add(rci);
 				}
 			}
@@ -324,19 +329,20 @@ public class SoftBody : MonoBehaviour
 					// 刚体的速度
 					rigid = collider.attachedRigidbody;
 					if (rigid != null) {
-						va = rigid.velocity * Time.fixedDeltaTime;
+						va = rigid.velocity + Vector3.Cross(rigid.angularVelocity, rci.param1);
+						va *= Time.fixedDeltaTime;
 					}
 				}
 				Vector3 vb = node.curpos - node.prevpos;
 				Vector3 vr = vb - va;
 				float dn = Vector3.Dot(vr, rci.normal);
-				float dp = Mathf.Min(Vector3.Dot(node.curpos, rci.normal) + rci.offset, 0.01f);
+				float dp = Mathf.Min(Vector3.Dot(node.curpos, rci.normal) + rci.offset, 0);
 				Vector3 fv = vr - rci.normal * dn;
 				Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
 				node.curpos -= impulse * rci.param0;
 				if (rigid != null) {
 					// 刚体收到的冲量
-					rigid.AddForce(impulse, ForceMode.Impulse);
+					rigid.AddForceAtPosition(impulse, node.curpos, ForceMode.Impulse);
 				}
 			}
 			// linear soler
