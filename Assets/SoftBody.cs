@@ -7,8 +7,8 @@ public class SoftBody : MonoBehaviour
 	public bool isTorus = true;
 
 	public float W = 0.1f;
-	public Vector3 G = new Vector3(0, -9.8f, 0);
 	public float Stiffness = 1;
+	public float Bend = 1;
 	public float Friction = 0.1f;
 	public float Hardness = 0.1f;
 	public int INTERATIONS = 20;
@@ -30,7 +30,7 @@ public class SoftBody : MonoBehaviour
 	{
 		public Matrix4x4 impMat;
 		public Vector3 normal = Vector3.up;
-		public float offset;
+		public Vector3 closestPnt;
 		public float friction = 0.1f;
 		public float hardness = 0.1f;
 
@@ -55,8 +55,8 @@ public class SoftBody : MonoBehaviour
 	{
 		public Vector3 dir; // 方向，n2指向n1  
 		public Node n1, n2;
-		public float rest; // 弹簧的原始长度
 		public float param0; // k / (w1 + w2)
+		public float param1; // 弹簧的原始长度的平方
 	}
 
 	protected class Face
@@ -152,23 +152,52 @@ public class SoftBody : MonoBehaviour
 			}
 		}
 
-		List<bool> linked = new List<bool>();
+		// 这个保存某一条边相对的那个点的索引，可用于计算弯曲弹簧
+		// 也可以视为邻接矩阵，-1表示两个点没有弹簧相连，>=0表示连了拉伸弹簧，-2表示连了弯曲弹簧。
+		// 假设两个点可以同时连拉伸和弯曲弹簧，可能不太科学
+		List<int> adjacentPoints = new List<int>();
+		// 最多有三角形个数*3条边，相当于顶点索引个数（所有三角形都是独立的，没有重合的边）
 		for (int i = 0; i < vertices.Length * vertices.Length; i++) {
-			linked.Add(false);
+			adjacentPoints.Add(-1);
 		}
 
+		// 这里遍历全部三角形
 		for (int i = 0; i < tris.Length; i += 3) {
 			for (int j = 0, k = 1; j < 3; j++, k++, k %= 3) {
 				int idx1 = tris[i + j];
 				int idx2 = tris[i + k];
-				if (!linked[idx1 * vertices.Length + idx2] && !linked[idx2 * vertices.Length + idx1]) {
-					linked[idx1 * vertices.Length + idx2] = true;
-					linked[idx2 * vertices.Length + idx1] = true;
+				int idx3 = tris[i + (k + 1) % 3]; // 这个就是边相对的点的索引
+				if (adjacentPoints[idx1 * vertices.Length + idx2] < 0 && adjacentPoints[idx2 * vertices.Length + idx1] < 0) {
+					adjacentPoints[idx1 * vertices.Length + idx2] = idx3;
+					adjacentPoints[idx2 * vertices.Length + idx1] = idx3;
+					// 这个弹簧用于拉伸约束
 					Link link = new Link();
 					link.n1 = m_nodes[idx1];
 					link.n2 = m_nodes[idx2];
-					link.rest = (link.n1.curpos - link.n2.curpos).sqrMagnitude;
+					float w = link.n1.w + link.n2.w;
+					link.param0 = w / Stiffness;
+					link.param1 = (link.n1.curpos - link.n2.curpos).sqrMagnitude;
 					m_links.Add(link);
+				}
+				else {
+					// 如果某条边属于两个三角形，则会遍历两次；如果某条边只属于一个三角形，则只会遍历一次。
+					// 如果已经把一条边添加到弹簧的list里，说明是第二次遍历，这样就确定了边所属的两个三角形的邻接关系
+					int idx4 = adjacentPoints[idx1 * vertices.Length + idx2];
+					if (idx4 != -1) {
+						// 说明idx1,idx2已经对应了一个点了
+						if (adjacentPoints[idx3 * vertices.Length + idx4] != -2 && adjacentPoints[idx4 * vertices.Length + idx3] != -2) {
+							adjacentPoints[idx3 * vertices.Length + idx4] = -2;
+							adjacentPoints[idx4 * vertices.Length + idx3] = -2;
+							// 这个弹簧用于弯曲约束
+							Link link = new Link();
+							link.n1 = m_nodes[idx3];
+							link.n2 = m_nodes[idx4];
+							float w = link.n1.w + link.n2.w;
+							link.param0 = w / Bend;
+							link.param1 = (link.n1.curpos - link.n2.curpos).sqrMagnitude;
+							m_links.Add(link); 
+						}
+					}
 				}
 			}
 			Face face = new Face();
@@ -184,26 +213,19 @@ public class SoftBody : MonoBehaviour
 
 	protected void PredictMotion()
 	{
-		for (int i = 0; i < m_links.Count; i++) {
-			Link link = m_links[i];
-			float w = link.n1.w + link.n2.w;
-			link.param0 = w / Stiffness;
-		}
-
 		for (int i = 0; i < m_nodes.Count; i++) {
 			if (m_nodes[i].w <= 0) {
 				continue;
 			}
 			// 重力
-			m_nodes[i].velocity += G * Time.fixedDeltaTime;
+			m_nodes[i].velocity += Physics.gravity * Time.fixedDeltaTime;
 			m_nodes[i].prevpos = m_nodes[i].curpos;
 			m_nodes[i].curpos += m_nodes[i].velocity * Time.fixedDeltaTime;
 			// TODO: 其他的外力
 		}
 
+		// 假的
 		transform.position = m_nodes[0].curpos;
-
-		m_rigidContactInfos.Clear();
 	}
 
 	protected void NarrowPhase()
@@ -214,6 +236,7 @@ public class SoftBody : MonoBehaviour
 
 	private void NarrowPhaseWithOBB()
 	{
+		m_rigidContactInfos.Clear();
 		for (int i = 0; i < m_colliders.Count; i++) {
 			Collider cld = m_colliders[i];
 			Rigidbody rigid = cld.attachedRigidbody;
@@ -234,18 +257,20 @@ public class SoftBody : MonoBehaviour
 					va *= Time.fixedDeltaTime;
 					Vector3 vb = node.curpos - node.prevpos;
 					Vector3 vr = vb - va;
+					// dn相当于相对速度的法相分量
 					float dn = Vector3.Dot(vr, normal);
-					Vector3 fv = vr - normal * dn;
+					// fv相当于相对速度的切线分量
+					Vector3 fv = vr - normal * dn;	
 
 					RigidContactInfo rci = new RigidContactInfo();
 					rci.hardness = Hardness;
 					rci.friction = fv.sqrMagnitude < (dn * Friction * dn * Friction) ? 0 : 1 - Friction;
 					rci.normal = normal;
+					rci.closestPnt = point;
 					rci.node = node;
 					rci.collider = cld;
 					rci.param0 = node.w * Time.fixedDeltaTime;
 					rci.param1 = ra;
-					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
 					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, obb.InertiaTensor(tr.rotation), ra);
 					m_rigidContactInfos.Add(rci);
 				}
@@ -278,9 +303,9 @@ public class SoftBody : MonoBehaviour
 						rci.normal = hit.normal;
 					}
 					rci.node = node;
+					rci.closestPnt = closetPoint;
 					rci.collider = null;
 					rci.param0 = node.w * Time.fixedDeltaTime;
-					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
 					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
 					m_rigidContactInfos.Add(rci);
 				}
@@ -291,7 +316,7 @@ public class SoftBody : MonoBehaviour
 					rci.node = node;
 					rci.collider = null;
 					rci.param0 = node.w * Time.fixedDeltaTime;
-					rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+					rci.closestPnt = node.curpos - rci.normal * dst;
 					rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
 					m_rigidContactInfos.Add(rci);
 				}
@@ -303,7 +328,7 @@ public class SoftBody : MonoBehaviour
 				rci.node = node;
 				rci.collider = null;
 				rci.param0 = node.w * Time.fixedDeltaTime;
-				rci.offset = -Vector3.Dot(rci.normal, node.curpos - rci.normal * dst);
+				rci.closestPnt = node.curpos - rci.normal * dst;
 				rci.impMat = ImpulseMatrix(node.w, 0, Matrix4x4.zero, node.curpos);
 				m_rigidContactInfos.Add(rci);
 			}
@@ -336,13 +361,15 @@ public class SoftBody : MonoBehaviour
 				Vector3 vb = node.curpos - node.prevpos;
 				Vector3 vr = vb - va;
 				float dn = Vector3.Dot(vr, rci.normal);
-				float dp = Mathf.Min(Vector3.Dot(node.curpos, rci.normal) + rci.offset, 0);
-				Vector3 fv = vr - rci.normal * dn;
-				Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
-				node.curpos -= impulse * rci.param0;
-				if (rigid != null) {
-					// 刚体收到的冲量
-					rigid.AddForceAtPosition(impulse, node.curpos, ForceMode.Impulse);
+				if (dn <= 2.2204460492503131e-016) {
+					float dp = Mathf.Min(-Vector3.Distance(rci.closestPnt, node.curpos), 0);
+					Vector3 fv = vr - rci.normal * dn;
+					Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
+					node.curpos -= impulse * rci.param0;
+					if (rigid != null) {
+						// 刚体收到的冲量
+						rigid.AddForceAtPosition(impulse, node.curpos, ForceMode.Impulse);
+					} 
 				}
 			}
 			// linear soler
@@ -353,8 +380,8 @@ public class SoftBody : MonoBehaviour
 					Node n2 = link.n2;
 					Vector3 dir = n1.curpos - n2.curpos;
 					float len = dir.sqrMagnitude;
-					if (len > 1.192092896e-07F) {
-						Vector3 dp = (len - link.rest) / (len + link.rest) / link.param0 * dir;
+					if (len + link.param1 > 1.192092896e-07F) {
+						Vector3 dp = (len - link.param1) / (len + link.param1) / link.param0 * dir;
 						n1.curpos -= n1.w * dp;
 						n2.curpos += n2.w * dp;
 					}
