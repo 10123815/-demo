@@ -4,14 +4,14 @@ using UnityEngine;
 public class SoftBody : MonoBehaviour
 {
 
-	public bool isTorus = true;
+	public bool test = true;
 
 	public float W = 0.1f;
 	public float Stiffness = 1;
 	public float Bend = 1;
 	public float Friction = 0.1f;
 	public float Hardness = 0.1f;
-	public int INTERATIONS = 20;
+	public int INTERATIONS = 5;
 
 	protected List<Node> m_nodes;
 	protected List<Link> m_links;
@@ -37,8 +37,8 @@ public class SoftBody : MonoBehaviour
 		public Collider collider;
 		public Node node;
 
-		public float param0;	// dt / mass
-		public Vector3 param1;	// relative anchor
+		public float param0;    // dt / mass
+		public Vector3 param1;  // relative anchor
 	}
 
 	protected class Node
@@ -79,7 +79,7 @@ public class SoftBody : MonoBehaviour
 
 	virtual protected void CreateSoftBody()
 	{
-		if (isTorus) {
+		if (test) {
 			m_mesh = GetComponent<MeshFilter>().mesh = new Mesh();
 			CreateSoftBodyFromMesh(TorusMeshData.gVertices, TorusMeshData.gIndices);
 		}
@@ -101,6 +101,10 @@ public class SoftBody : MonoBehaviour
 		//for (int i = 0; i < m_nodes.Count; i++) {
 		//	Node node = m_nodes[i];
 		//	Debug.DrawLine(node.prevpos, node.curpos, Color.blue);
+		//}
+		//for (int j = 0; j < m_links.Count; j++) {
+		//	Link link = m_links[j];
+		//	Debug.DrawLine(link.n1.curpos, link.n2.curpos, Color.blue);
 		//}
 	}
 
@@ -125,13 +129,100 @@ public class SoftBody : MonoBehaviour
 		}
 	}
 
+	/// <summary>
+	/// 有些网格中位置重合的顶点算成了两个，相应的顶点索引也是两个，这会导致柔体内部的弹簧连接不正确，收到冲击会爆炸？
+	/// 这而函数把重合的顶点合并起来，并更新了顶点索引
+	/// </summary>
+	private void PreprocessMesh(ref Vector3[] vertices, ref int[] tris)
+	{
+		if (test || vertices.Length < 3 || tris.Length < 3) {
+			return;
+		}
+		
+		Dictionary<int, Vector3> vtxDict = new Dictionary<int, Vector3>();
+		Dictionary<int, Vector2> uvDict = new Dictionary<int, Vector2>();
+		List<int> idxList = new List<int>();
+		vtxDict[tris[0]] = vertices[tris[0]];
+		vtxDict[tris[1]] = vertices[tris[1]];
+		vtxDict[tris[2]] = vertices[tris[2]];
+		uvDict[tris[0]] = m_mesh.uv[tris[0]];
+		uvDict[tris[1]] = m_mesh.uv[tris[1]];
+		uvDict[tris[2]] = m_mesh.uv[tris[2]];
+		idxList.Add(tris[0]);
+		idxList.Add(tris[1]);
+		idxList.Add(tris[2]);
+		// 目前还没有太好的办法，只能遍历所有的顶点判断距离
+		for (int i = 3; i < tris.Length; i += 3) {
+			int[] curIdx = { tris[i], tris[i + 1], tris[i + 2] };
+			for (int m = 0; m < 3; m++) {
+				// 这个是搜索正确的索引的结果：
+				// -1表示这个点在j中没出现过，还要接着找；
+				// -2表示i的m点和j的n点是同一个点;
+				// 非负表示重合的点但是idx不对
+				int coincidentIdx = -1;
+				Vector3 curp = vertices[curIdx[m]];
+				for (int j = 0; j < i; j += 3) {
+					// 检查第i个三角形和前j个三角形
+					int[] chkIdx = { idxList[j], idxList[j + 1], idxList[j + 2] };
+					for (int n = 0; n < 3; n++) {
+						Vector3 chkp = vtxDict[chkIdx[n]];
+						if (curIdx[m] == chkIdx[n]) {
+							coincidentIdx = -2;
+							break;
+						}
+						if (Mathf.Abs(Vector3.Distance(curp, chkp)) < 0.1) {
+							// 重合了，但是当前的idx不对
+							coincidentIdx = Mathf.Min(curIdx[m], chkIdx[n]);
+							break;
+						}
+					}
+					if (coincidentIdx != -1) {
+						break;
+					}
+				}
+				if (coincidentIdx == -1) {
+					vtxDict[curIdx[m]] = curp;
+					uvDict[curIdx[m]] = m_mesh.uv[curIdx[m]];
+					idxList.Add(curIdx[m]);
+				}
+				else if (coincidentIdx == -2) {
+					idxList.Add(curIdx[m]);
+				}
+				else {
+					idxList.Add(coincidentIdx);
+				}
+			}
+		}
+		tris = idxList.ToArray();
+		int maxidx = Mathf.Max(tris);
+		vertices = new Vector3[maxidx + 1];
+		Vector2[] uvs = new Vector2[maxidx + 1];
+		for (int i = 0; i < maxidx + 1; i++) {
+			if (vtxDict.ContainsKey(i)) {
+				vertices[i] = vtxDict[i];
+			}
+		}
+		for (int i = 0; i < maxidx + 1; i++) {
+			if (uvDict.ContainsKey(i)) {
+				uvs[i] = uvDict[i];
+			}
+		}
+		m_mesh = new Mesh();
+		m_mesh.vertices = vertices;
+		m_mesh.triangles = tris;
+		m_mesh.uv = uvs;
+		GetComponent<MeshFilter>().mesh = m_mesh;
+	}
+
 	private void CreateSoftBodyFromMesh(Vector3[] vertices, int[] tris)
 	{
+		PreprocessMesh(ref vertices, ref tris);
+
 		m_nodes = new List<Node>();
 		m_links = new List<Link>();
 		m_faces = new List<Face>();
 
-		if (isTorus) {
+		if (test) {
 			m_mesh.vertices = new Vector3[vertices.Length];
 			m_mesh.uv = new Vector2[vertices.Length];
 			m_mesh.triangles = tris;
@@ -146,7 +237,7 @@ public class SoftBody : MonoBehaviour
 			node.idx = i;
 			m_nodes.Add(node);
 
-			if (isTorus) {
+			if (test) {
 				m_mesh.uv[i] = new Vector2(0, 0);
 				m_mesh.vertices[i] = vertices[i];
 			}
@@ -195,7 +286,7 @@ public class SoftBody : MonoBehaviour
 							float w = link.n1.w + link.n2.w;
 							link.param0 = w / Bend;
 							link.param1 = (link.n1.curpos - link.n2.curpos).sqrMagnitude;
-							m_links.Add(link); 
+							m_links.Add(link);
 						}
 					}
 				}
@@ -225,7 +316,11 @@ public class SoftBody : MonoBehaviour
 		}
 
 		// 假的
-		transform.position = m_nodes[0].curpos;
+		Vector3 transformPos = Vector3.zero;
+		for (int i = 0; i < m_nodes.Count; i++) {
+			transformPos += m_nodes[i].curpos;
+		}
+		transform.position = transformPos / m_nodes.Count;
 	}
 
 	protected void NarrowPhase()
@@ -260,7 +355,7 @@ public class SoftBody : MonoBehaviour
 					// dn相当于相对速度的法相分量
 					float dn = Vector3.Dot(vr, normal);
 					// fv相当于相对速度的切线分量
-					Vector3 fv = vr - normal * dn;	
+					Vector3 fv = vr - normal * dn;
 
 					RigidContactInfo rci = new RigidContactInfo();
 					rci.hardness = Hardness;
@@ -298,7 +393,7 @@ public class SoftBody : MonoBehaviour
 
 					// 可以通过梯度下降法求一个近似的最近点。限制最多迭代次数
 					Vector3 closetPoint;
-					float dst = -GradientDescent(m_terrain, node.curpos, out closetPoint);
+					GradientDescent(m_terrain, node.curpos, out closetPoint);
 					if (Physics.Raycast(node.curpos, closetPoint - node.curpos, out hit, layerMask)) {
 						rci.normal = hit.normal;
 					}
@@ -369,7 +464,7 @@ public class SoftBody : MonoBehaviour
 					if (rigid != null) {
 						// 刚体收到的冲量
 						rigid.AddForceAtPosition(impulse, node.curpos, ForceMode.Impulse);
-					} 
+					}
 				}
 			}
 			// linear soler
@@ -408,7 +503,6 @@ public class SoftBody : MonoBehaviour
 
 	private Matrix4x4 MassMatrix(float w, Matrix4x4 iwi, Vector3 r)
 	{
-		Matrix4x4 dia = Diagonal(w);
 		Matrix4x4 mat = Cross(r);
 		mat = mat * iwi * mat;
 		mat.SetRow(0, new Vector4(w, 0, 0, 0) - mat.GetRow(0));
