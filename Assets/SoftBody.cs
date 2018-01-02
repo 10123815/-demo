@@ -5,10 +5,11 @@ public class SoftBody : MonoBehaviour
 {
 
 	public bool test = true;
-
+	
 	public float W = 0.1f;
 	public float Stiffness = 1;
 	public float Bend = 1;
+	public float VolumePerserve = 1;
 	public float Friction = 0.1f;
 	public float Hardness = 0.1f;
 	public int INTERATIONS = 5;
@@ -16,6 +17,11 @@ public class SoftBody : MonoBehaviour
 	protected List<Node> m_nodes;
 	protected List<Link> m_links;
 	protected List<Face> m_faces;
+
+	/// <summary>
+	/// 3倍体积，用于体积约束
+	/// </summary>
+	private float m_3v;
 
 	// 和刚体的碰撞信息
 	private List<RigidContactInfo> m_rigidContactInfos = new List<RigidContactInfo>();
@@ -48,7 +54,20 @@ public class SoftBody : MonoBehaviour
 		public Vector3 velocity;
 		public float w;         // 1 / mass
 		public int idx;
-		public object data;
+		
+		/// <summary>
+		/// 顶点法向量，带包含改点的三角形面积权重
+		/// </summary>
+		public Vector3 areaWeightedNormal;
+		public List<Face> faces = new List<Face>();
+		public Vector3 CalcAreaWeightedNormal()
+		{
+			areaWeightedNormal = Vector3.zero;
+			for (int i = 0; i < faces.Count; i++) {
+				areaWeightedNormal += faces[i].AreaNormal();
+			}
+			return areaWeightedNormal;
+		}
 	}
 
 	protected class Link
@@ -62,7 +81,16 @@ public class SoftBody : MonoBehaviour
 	protected class Face
 	{
 		public Node n1, n2, n3;
-		public float area;      // 三角形面积
+
+		/// <summary>
+		/// 三角形面积，带方向 
+		/// </summary>
+		public Vector3 AreaNormal()
+		{
+			Vector3 a = n2.curpos - n1.curpos;
+			Vector3 b = n3.curpos - n1.curpos;
+			return Vector3.Cross(a, b) * 0.5f;
+		}
 	}
 
 	void Awake()
@@ -105,6 +133,10 @@ public class SoftBody : MonoBehaviour
 		//for (int j = 0; j < m_links.Count; j++) {
 		//	Link link = m_links[j];
 		//	Debug.DrawLine(link.n1.curpos, link.n2.curpos, Color.blue);
+		//}
+		//for (int i = 0; i < m_nodes.Count; i++) {
+		//	Node node = m_nodes[i];
+		//	Debug.DrawRay(node.curpos, node.CalcAreaWeightedNormal());
 		//}
 	}
 
@@ -251,7 +283,7 @@ public class SoftBody : MonoBehaviour
 		for (int i = 0; i < vertices.Length * vertices.Length; i++) {
 			adjacentPoints.Add(-1);
 		}
-
+		
 		// 这里遍历全部三角形
 		for (int i = 0; i < tris.Length; i += 3) {
 			for (int j = 0, k = 1; j < 3; j++, k++, k %= 3) {
@@ -295,11 +327,18 @@ public class SoftBody : MonoBehaviour
 			face.n1 = m_nodes[tris[i]];
 			face.n2 = m_nodes[tris[i + 1]];
 			face.n3 = m_nodes[tris[i + 2]];
-			Vector3 a = face.n2.curpos - face.n1.curpos;
-			Vector3 b = face.n3.curpos - face.n1.curpos;
-			face.area = Vector3.Cross(a, b).magnitude / 2;
 			m_faces.Add(face);
+
+			face.n1.faces.Add(face);
+			face.n2.faces.Add(face);
+			face.n3.faces.Add(face);
 		}
+
+		for (int j = 0; j < m_nodes.Count; j++) {
+			Node node = m_nodes[j];
+			m_3v += Vector3.Dot(node.curpos, node.CalcAreaWeightedNormal());
+		}
+		m_3v /= 3.0f;
 	}
 
 	protected void PredictMotion()
@@ -475,13 +514,30 @@ public class SoftBody : MonoBehaviour
 					Node n2 = link.n2;
 					Vector3 dir = n1.curpos - n2.curpos;
 					float len = dir.sqrMagnitude;
-					if (len + link.param1 > 1.192092896e-07F) {
+					if (Mathf.Abs(len - link.param1) > 1.192092896e-07F) {
 						Vector3 dp = (len - link.param1) / (len + link.param1) / link.param0 * dir;
 						n1.curpos -= n1.w * dp;
 						n2.curpos += n2.w * dp;
 					}
 				}
 			}
+			// volume solver
+			if (VolumePerserve > 0) {
+				float CX = 0.0f;
+				float W = 0.0f;
+				for (int j = 0; j < m_nodes.Count; j++) {
+					Node node = m_nodes[j];
+					CX += Vector3.Dot(node.curpos, node.CalcAreaWeightedNormal());
+					W += node.w * node.areaWeightedNormal.magnitude;
+				}
+				CX = CX / 3.0f - m_3v;
+				W = 3.0f * VolumePerserve / W;
+				for (int j = 0; j < m_nodes.Count; j++) {
+					Node node = m_nodes[j];
+					node.curpos -= node.w * W * CX * node.areaWeightedNormal;
+				} 
+			}
+
 		}
 		// update velocity
 		for (int i = 0; i < m_nodes.Count; i++) {
