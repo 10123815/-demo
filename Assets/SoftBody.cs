@@ -260,6 +260,7 @@ public class SoftBody : MonoBehaviour
 			m_mesh.triangles = tris;
 		}
 
+		Vector2[] uv = m_mesh.uv;
 		for (int i = 0; i < vertices.Length; i++) {
 			Node node = new Node();
 			node.curpos = transform.rotation * vertices[i] + transform.position;
@@ -270,10 +271,16 @@ public class SoftBody : MonoBehaviour
 			m_nodes.Add(node);
 
 			if (test) {
-				m_mesh.uv[i] = new Vector2(0, 0);
+				if (vertices[i].x > 0) {
+					uv[i] = new Vector2(0, 1);
+				}
+				else {
+					uv[i] = Vector2.one;
+				}
 				m_mesh.vertices[i] = vertices[i];
 			}
 		}
+		m_mesh.uv = uv;
 
 		// 这个保存某一条边相对的那个点的索引，可用于计算弯曲弹簧
 		// 也可以视为邻接矩阵，-1表示两个点没有弹簧相连，>=0表示连了拉伸弹簧，-2表示连了弯曲弹簧。
@@ -405,7 +412,7 @@ public class SoftBody : MonoBehaviour
 					rci.collider = cld;
 					rci.param0 = node.w * Time.fixedDeltaTime;
 					rci.param1 = ra;
-					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, obb.InertiaTensor(tr.rotation), ra);
+					rci.impMat = ImpulseMatrix(node.w, 1.0f / obb.mass, obb.InvInertiaTensor(tr.rotation), ra);
 					m_rigidContactInfos.Add(rci);
 				}
 			}
@@ -496,7 +503,7 @@ public class SoftBody : MonoBehaviour
 				Vector3 vr = vb - va;
 				float dn = Vector3.Dot(vr, rci.normal);
 				if (dn <= 2.2204460492503131e-016) {
-					float dp = Mathf.Min(-Vector3.Distance(rci.closestPnt, node.curpos), 0);
+					float dp = Mathf.Min(-Vector3.Distance(rci.closestPnt, node.curpos), -0.025f);
 					Vector3 fv = vr - rci.normal * dn;
 					Vector3 impulse = rci.impMat * (vr - (fv * rci.friction) + (rci.normal * dp * rci.hardness));
 					node.curpos -= impulse * rci.param0;
@@ -553,7 +560,7 @@ public class SoftBody : MonoBehaviour
 		mat.SetRow(0, new Vector4(w1, 0, 0, 0) + mat.GetRow(0));
 		mat.SetRow(1, new Vector4(0, w1, 0, 0) + mat.GetRow(1));
 		mat.SetRow(2, new Vector4(0, 0, w1, 0) + mat.GetRow(2));
-		mat.SetRow(3, new Vector4(0, 0, 0, w1) + mat.GetRow(3));
+		mat[3, 3] = 1;
 		return Diagonal(1.0f / Time.fixedDeltaTime) * mat.inverse;
 	}
 

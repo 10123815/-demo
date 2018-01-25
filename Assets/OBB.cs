@@ -5,15 +5,16 @@ public struct OBB
 
 	public OBB(Transform tr)
 	{
+		trans = tr;
 		mass = tr.GetComponent<Rigidbody>().mass;
 		center = tr.position;
 		extents = tr.localScale / 2.0f;
 		forward = tr.forward;
 		right = tr.right;
 		up = tr.up;
-		//float x = extents.x * extents.x;
-		//float y = extents.y * extents.y;
-		//float z = extents.z * extents.z;
+		//float x = 1;
+		//float y = 1;
+		//float z = 1;
 		//m_inertia.x = mass / 12.0f * (y + z);
 		//m_inertia.y = mass / 12.0f * (x + z);
 		//m_inertia.z = mass / 12.0f * (x + y);
@@ -26,6 +27,7 @@ public struct OBB
 	public Vector3 up;
 	public Vector3 forward;
 	public float mass;
+	public Transform trans;
 
 	/// <summary>
 	/// 转动惯量
@@ -33,17 +35,25 @@ public struct OBB
 	private Vector3 m_inertia;
 
 	/// <summary>
-	/// 求obb的惯性张量。bullet就是这么干的，我也不知道为啥
+	/// 求obb在世界坐标系下的惯性张量。
+	/// 因为obb是对称的，各个惯性积是0，这样就得到了局部坐标系下的惯性张量，再变换到世界坐标系即可
 	/// </summary>
-	public Matrix4x4 InertiaTensor(Quaternion rotation)
+	public Matrix4x4 InvInertiaTensor(Quaternion rotation)
 	{
-		// 旋转矩阵
+		// 到世界坐标的旋转变换矩阵
 		Matrix4x4 mat = new Matrix4x4();
 		mat.SetTRS(Vector3.zero, rotation, Vector3.one);
-		mat.GetColumn(0).Scale(m_inertia);
-		mat.GetColumn(1).Scale(m_inertia);
-		mat.GetColumn(2).Scale(m_inertia);
-		return mat * mat.transpose;
+		Vector3 invInertia;
+		invInertia.x = 1.0f / m_inertia.x;
+		invInertia.y = 1.0f / m_inertia.y;
+		invInertia.z = 1.0f / m_inertia.z;
+		Matrix4x4 oldmat = mat;
+		for (int i = 0; i < 3; i++) {
+			Vector3 v = mat.GetRow(i);
+			v.Scale(invInertia);
+			mat.SetRow(i, v);
+		}
+		return mat * oldmat.transpose;
 	}
 
 	/// <summary>
@@ -70,13 +80,11 @@ public struct OBB
 			// 先找最近的面
 			int mini = 0;
 			float mindist = extents[0] - Mathf.Abs(xyz[0]);
-			Vector3 norm = right;
 			for (int i = 1; i < 3; i++) {
 				float dist = extents[i] - Mathf.Abs(xyz[i]);
 				if (dist < mindist) {
 					mindist = dist;
 					mini = i;
-					norm = norms[i];
 				}
 			}
 			if (xyz[mini] >= 0) {
